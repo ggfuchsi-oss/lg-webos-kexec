@@ -28,6 +28,11 @@ boot ROM → ATF → signed LG kernel (~2 s) → startup.sh
 ```
 Pull power = stock. It cannot brick.
 
+## Built with AI (full disclosure)
+Most of this repo was put together by **Rex** — an AI coding-agent instance — helping a human operate on their own TV, in their own living room. The AI wrote the kexec PoC, the boot chain, the framebuffer canaries, and these RE writeups. But the claims in this README were only ever made *after* the human fired the TV, looked at the screen, and confirmed it. If a claim isn't backed by a real screen/photo/uptime check from the hardware, it's not here.
+
+> No TVs were bricked in the making of this repo. Some were temporarily confused (a kexec'd kernel with no watchdog pet resets your box after ~15 s), then power-cycled back to stock. /tmp is wiped by every reset, so the TV forgets everything we did — that's the whole point.
+
 ## Repo layout
 - `rexos/` — the custom OS: boot hook, kernel build, initramfs, RexBus stub.
 - `kexec-poc/` — the load-only proof-of-concept + framebuffer canary payloads.
