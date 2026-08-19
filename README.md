@@ -15,7 +15,25 @@ LG 50UP81009LR (webOS 6.5, Realtek RTD2875, armv7l). Rooted via Homebrew Channel
 - The entire chain runs from the stock webOS `startup.sh` — the signed bootloader / ATF / OP-TEE are never touched.
 
 ## What's still missing
-- **Watchdog pet** — the SoC/micom watchdog resets the box after ~10–21 s because the new kernel doesn't service it yet.
+- **Watchdog pet** — REVERSE-ENGINEERED + FIX WRITTEN, not yet proven in a live kexec boot. See below.
+
+### Watchdog pet — found it (2026-08-19)
+The reset is the **SoC watchdog** (TC block). The stock kernel's `micom_wdt_thread()`
+holds it off with three register pokes (`drivers/rtk_kdriver/platform/tv006/intmicom.c`):
+```
+TCWCR @ 0xFE062204 <- 0xA5         // unlock
+TCWOV @ 0xFE062210 <- 0x0FFFFFFF   // max overflow => huge timeout
+TCWTR @ 0xFE062208 <- 0x01         // kick
+```
+Under kexec the driver's raw `*(volatile*)0xFE062208 = 0x01` lands on an **unmapped
+VA** and is a silent no-op, so the SoC watchdog fires (~10–21 s). `micom-pet.c` now
+does the same pokes from userspace via `/dev/mem` (CONFIG_DEVMEM=y), which maps
+correctly, plus a `0xB1` keepalive to `/dev/sys-intmicom` as defense-in-depth.
+
+**Status:** `micom-pet.c` rewritten, compiles with the musl toolchain, and a 5 s
+benign smoke test on the live TV confirmed it runs and writes its breadcrumb
+(`0x52455814` = "REX"+beat). The only remaining proof is a `kexec -e` boot that
+stays up past ~21 s — that reboots the TV, so it is an attended test.
 - **Display** — the panel uses tiled FBDC; raw framebuffer text isn't useful. Real output needs the VCPU RPC (drawing commands to the video engine).
 - **Networking** — the stock `wlan` module vermagic must match `CONFIG_LOCALVERSION=""` to load; not yet wired into the initramfs.
 

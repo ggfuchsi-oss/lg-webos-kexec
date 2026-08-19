@@ -9,7 +9,7 @@
 # Job 2: bring up a debug channel. No serial console on the TV, and the
 # framebuffer is tiled (raw text is infeasible), so our interactive shell is a
 # netcat listener on the network. If the eth driver comes up, `nc <tvip> 2323`
-# from the PC drops you into RexOS. The breadcrumb register 0x18060110 is the
+# from the PC drops you into RexOS. The breadcrumb register 0xFE060110 (written by micom-pet) is the
 # fallback liveness proof.
 
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
@@ -20,15 +20,6 @@ mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || mount -t tmpfs tmpfs /dev
 mkdir -p /dev/pts && mount -t devpts devpts /dev/pts 2>/dev/null
 echo "RexOS-TV" > /proc/sys/kernel/hostname
-
-# --- breadcrumb: we are alive (survives a warm reset; read via devmem 0x18060110) ---
-if command -v devmem >/dev/null; then
-  devmem 0x18060110 32 0x52455801   # "REX\x01"
-fi
-
-# --- keep the box alive ---
-/sbin/micom-pet &
-PET_PID=$!
 
 # --- keep the box alive ---
 /sbin/micom-pet &

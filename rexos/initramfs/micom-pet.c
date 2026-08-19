@@ -1,16 +1,25 @@
 /*
- * micom-pet.c — keep the LG TV's external Micom MCU fed so it doesn't reset
- * the board. Runs as a userspace daemon inside RexOS-TV (RAM only).
+ * micom-pet.c — keep an LG webOS TV (RTD2875 / K7LP) alive after kexec.
  *
- * The kernel's intmicom thread (do_intMicomShareMemory) is the AUTHORITATIVE
- * petter and is proven to return success on this hardware. This program is
- * defense-in-depth AND a visible heartbeat: it writes a breadcrumb counter into
- * the standby-domain register 0x18060110 (survives a warm reset) so we can
- * confirm, from the stock side afterwards, that RexOS really ran.
+ * Reverse-engineered from the stock LG kernel driver
+ * (drivers/rtk_kdriver/platform/tv006/intmicom.c). There are TWO watchdogs:
  *
- * Register block (phys):  COMMAND 0x18060500, DATA 0x18060504, CTRL 0x18060574.
- * Protocol (from the kernel driver / head.S pet): post command+data, then poll
- * CTRL until the 8051 releases it (==0). 0x01000605 / 0xB1 = read-micom-status.
+ *  1) SoC watchdog (the killer that resets our kexec'd kernel ~10-21s in).
+ *     The stock kernel's micom_wdt_thread() holds it off with three raw
+ *     register pokes to the TC (timer/counter) block:
+ *         TCWCR @ 0xFE062204 <- 0xA5         (unlock)
+ *         TCWOV @ 0xFE062210 <- 0x0FFFFFFF   (max overflow => huge timeout)
+ *         TCWTR @ 0xFE062208 <- 0x01         (kick / trigger)
+ *     Under kexec the driver's `*(volatile unsigned*)0xFE062208 = 0x01`
+ *     lands on an UNMAPPED virtual address and is a silent no-op, so the SoC
+ *     watchdog fires. We do the same pokes from userspace via /dev/mem
+ *     (CONFIG_DEVMEM=y, CONFIG_STRICT_DEVMEM off), which maps correctly.
+ *
+ *  2) External Micom MCU watchdog. Fed by the kernel's own micom_wdt_thread
+ *     via do_intMicomShareMemory(0xB1) — that path uses rtd_outl, which DOES
+ *     work under kexec, so the micom is already covered. We additionally send
+ *     the same 0xB1 keepalive through /dev/sys-intmicom (ioctl 's',16 =
+ *     INTMICOM_IPC_WRITE) as defense-in-depth.
  *
  * Build: arm-linux-musleabihf-gcc -static -Os -o micom-pet micom-pet.c
  */
@@ -20,49 +29,82 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <errno.h>
 #include <sys/mman.h>
-#include <time.h>
+#include <sys/ioctl.h>
 
-#define RBUS_PHYS   0x18000000u
-#define RBUS_SIZE   0x00200000u   /* RBUS_BASE_SIZE from iomap.h */
-#define MICOM_CMD   0x500u       /* +RBUS_PHYS = 0x18060500 */
-#define MICOM_DATA  0x504u       /* 0x18060504 */
-#define MICOM_CTRL  0x574u       /* 0x18060574 */
-#define CRUMB_REG   0x110u       /* 0x18060110 — stage/breadcrumb (warm-reset safe) */
+/* ---- SoC watchdog (TC block), physical addresses ---- */
+#define TC_BASE   0xFE062000u
+#define TCWCR_OFF 0x204u   /* unlock register  */
+#define TCWOV_OFF 0x210u   /* overflow (timeout) */
+#define TCWTR_OFF 0x208u   /* trigger / kick   */
 
-#define CMD_VALUE   0x01000605u
-#define DATA_VALUE  0xB1u
+/* ---- breadcrumb scratch (same SoC block the kernel uses for 0xFE06010C) ---- */
+#define CRUMB_BASE 0xFE060000u
+#define CRUMB_OFF  0x110u
 
-static volatile uint32_t *rbus;
+/* ---- micom IPC ioctl (drivers/rtk_kdriver/include/rtk_kdriver/intmicom.h) ---- */
+#define INTMICOM_IOC_MAGIC 's'
+#define INTMICOM_IPC_WRITE _IOW(INTMICOM_IOC_MAGIC, 16, unsigned int)
 
-static inline uint32_t rd(unsigned off) { return rbus[off / 4]; }
-static inline void      wr(unsigned off, uint32_t v) { rbus[off / 4] = v; }
+typedef struct {
+    uint8_t  CmdSize;
+    uint32_t pCmdBuf;
+    uint8_t  DataSize;
+    uint32_t pDataBuf;
+    uint8_t  retryCnt;
+} IPC_ARG_T;
 
-static void pet_once(void) {
-    wr(MICOM_CMD, CMD_VALUE);
-    wr(MICOM_DATA, DATA_VALUE);
-    /* wait (bounded) for the 8051 to release the shared-memory block */
-    for (int i = 0; i < 1000; i++) {
-        if (rd(MICOM_CTRL) == 0) return;
-        usleep(10);
-    }
-    /* 8051 didn't release in time — best effort, don't spin forever */
+static volatile uint32_t *map_phys(int fd, uint32_t phys, size_t len) {
+    void *m = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, phys);
+    if (m == MAP_FAILED) { perror("mmap"); return NULL; }
+    return (volatile uint32_t *)m;
+}
+
+/* Pet the SoC watchdog. This is the critical one. */
+static void pet_soc_wdt(volatile uint32_t *tc) {
+    tc[TCWCR_OFF / 4] = 0xA5;          /* TCWCR unlock */
+    tc[TCWOV_OFF / 4] = 0x0FFFFFFF;    /* TCWOV max   */
+    tc[TCWTR_OFF / 4] = 0x01;          /* TCWTR kick  */
+}
+
+/* Send the 0xB1 (CP_READ_MICOM_STATUS) keepalive to the micom via the kernel
+ * driver's IPC_WRITE ioctl. The handler requires BOTH Cmd and Data to be set,
+ * so we supply a 1-byte command and a 1-byte (zero) data payload. */
+static void pet_micom(int fd) {
+    uint8_t cmd = 0xB1;     /* CP_READ_MICOM_STATUS — kernel's own keepalive */
+    uint8_t data = 0x00;
+    IPC_ARG_T a;
+    memset(&a, 0, sizeof a);
+    a.CmdSize  = 1;
+    a.pCmdBuf  = (uint32_t)(uintptr_t)&cmd;
+    a.DataSize = 1;
+    a.pDataBuf = (uint32_t)(uintptr_t)&data;
+    a.retryCnt = 3;
+    ioctl(fd, INTMICOM_IPC_WRITE, &a);   /* ignore errors: defense-in-depth */
 }
 
 int main(void) {
-    int fd = open("/dev/mem", O_RDWR | O_SYNC);
-    if (fd < 0) { perror("/dev/mem"); return 1; }
+    int mem = open("/dev/mem", O_RDWR | O_SYNC);
+    if (mem < 0) { perror("/dev/mem"); return 1; }
 
-    void *m = mmap(NULL, RBUS_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, RBUS_PHYS);
-    if (m == MAP_FAILED) { perror("mmap"); return 1; }
-    rbus = (volatile uint32_t *)m;
+    volatile uint32_t *tc = map_phys(mem, TC_BASE, 0x1000);
+    if (!tc) return 1;
+    /* breadcrumb page is optional; only write it if the mmap succeeds */
+    volatile uint32_t *crumb = map_phys(mem, CRUMB_BASE, 0x1000);
 
-    uint32_t beat = 0;
+    int micom = open("/dev/sys-intmicom", O_RDWR);
+    if (micom < 0)
+        fprintf(stderr, "micom-pet: /dev/sys-intmicom: %s (SoC pet only)\n",
+                strerror(errno));
+
+    unsigned long beat = 0;
     for (;;) {
-        pet_once();
-        wr(CRUMB_REG, 0x52455800 | (beat & 0xff));  /* "REX" + beat */
+        pet_soc_wdt(tc);                       /* THE fix */
+        if (micom >= 0) pet_micom(micom);     /* defense-in-depth */
+        if (crumb) crumb[CRUMB_OFF / 4] = 0x52455800u | (beat & 0xff); /* "REX"+beat */
         beat++;
-        usleep(200000);   /* ~5 Hz; matches the ~500ms stock cadence, safe margin */
+        usleep(100000);   /* 100 ms — matches the stock micom_wdt_thread cadence */
     }
     return 0;
 }
