@@ -1,0 +1,6 @@
+GPL-2.0-only
+See https://www.gnu.org/licenses/old-licenses/gpl-2.0.html for full text.
+
+Note: this repo contains LG's GPL kernel source/config for the RTD2875
+(webOS 6.5 / 50UP81009LR), which is itself GPL-2.0. Our loader scripts and
+canary payloads are GPL-compatible.

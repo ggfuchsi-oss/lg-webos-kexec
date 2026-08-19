@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# rexos-kexec — load RexOS-TV (kernel + initramfs) into the TV's RAM and kexec.
+#
+# RAM-RESIDENT: nothing is written to the TV's eMMC. The kernel, initramfs, and
+# kexec binary all land in /tmp (tmpfs). webOS is replaced in memory only.
+# Pull the power -> stock TV. Zero brick risk.
+#
+# Firing kexec -e RESETS the TV. Run it when rex is around.
+# Pass --stage-only to load (kexec -l) WITHOUT firing — confirms the kernel
+# is accepted (staged=1) with no reset. Great pre-flight check.
+set -euo pipefail
+
+STAGE_ONLY=0
+for a in "$@"; do
+  [ "$a" = "--stage-only" ] && STAGE_ONLY=1
+done
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+
+TV="${REXOS_TV:-192.168.2.103}"
+KEY="${REXOS_TV_KEY:-$HOME/.ssh/tv_key}"
+PORT="${REXOS_TV_PORT:-22}"
+SSH_OPTS="-i $KEY -p $PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=10"
+# scp uses -P (uppercase) for port, unlike ssh's -p
+SCP_OPTS="-i $KEY -P $PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=10"
+
+KERNEL="${REXOS_KERNEL:-$ROOT/out/rexos-kernel.zImage}"
+INITRAMFS="${REXOS_INITRAMFS:-$ROOT/out/rexos-initramfs.cpio.gz}"
+KEXEC_BIN="${REXOS_KEXEC:-$HERE/kexec-arm-fixed}"
+
+for f in "$KERNEL" "$INITRAMFS" "$KEXEC_BIN"; do
+  [[ -f "$f" ]] || { echo "missing $f — run 'make' first" >&2; exit 1; }
+done
+
+echo "==> RexOS-TV loader"
+echo "    TV        : $TV"
+echo "    kernel    : $(basename "$KERNEL")"
+echo "    initramfs : $(basename "$INITRAMFS")"
+echo "    kexec     : $(basename "$KEXEC_BIN")"
+
+echo "==> pushing to $TV:/tmp  (RAM only — no eMMC writes)"
+scp $SCP_OPTS "$KERNEL" "$INITRAMFS" "$KEXEC_BIN" "root@$TV:/tmp/" || {
+  echo "scp failed — is the TV up at $TV? (key: $KEY)" >&2; exit 1; }
+
+echo "==> staging + firing kexec on the TV"
+ssh $SSH_OPTS "root@$TV" "STAGE_ONLY=$STAGE_ONLY bash -s" <<'REMOTE'
+set -e
+chmod +x /tmp/kexec-arm-fixed
+export KEXEC_FIXED_BASE=0x100000          # deterministic load base (entry +0x8000)
+cp /sys/firmware/fdt /tmp/tv.dtb          # live DTB from the running stock kernel
+
+# strip kexec-incompatible / resume bits from the stock cmdline
+RAW="$(cat /proc/cmdline)"
+CLEAN="$(echo "$RAW" | tr ' ' '\n' | grep -vE '^(snapshot|criu_enabled)$' \
+         | grep -vE '^resume=' | tr '\n' ' ')"
+echo "    cmdline: $CLEAN"
+
+/tmp/kexec-arm-fixed -l /tmp/rexos-kernel.zImage \
+  --initrd=/tmp/rexos-initramfs.cpio.gz \
+  --dtb=/tmp/tv.dtb \
+  --command-line="$CLEAN nr_cpus=1 maxcpus=1 rdinit=/init \
+initcall_blacklist=gdma_init_module" \
+  || { echo "    STAGE FAILED" >&2; exit 1; }
+staged=$(cat /sys/kernel/kexec_loaded)
+echo "    staged=$staged   (1 = kernel accepted)"
+
+if [ "${STAGE_ONLY:-0}" = "1" ]; then
+  echo "=== STAGE-ONLY: kernel accepted. NOT firing (no reset). ==="
+  echo "    To boot for real: re-run ./boot/rexos-kexec without --stage-only."
+  exit 0
+fi
+
+# --- disarm the stock-armed hardware write-monitors (our driver is disabled) ---
+for i in $(seq 1 16); do
+  echo "set$i clear" > /sys/realtek_boards/sb2_dbg 2>/dev/null || true
+done
+# arm_wrapper memory monitors: CTRL(bit1 disable) / START / END per slot
+for id in 0 1 2 3; do
+  C=$((0x1805C040+id*4)); S=$((0x1805C020+id*4)); E=$((0x1805C030+id*4))
+  devmem $C 32 0x2 2>/dev/null || true
+  devmem $S 32 0  2>/dev/null || true
+  devmem $E 32 0  2>/dev/null || true
+done
+# widen SoC watchdog window (TCWOV) — persists across kexec -e
+devmem 0x18062210 32 0x10237880 2>/dev/null || true
+# park secondary CPUs in stock code we won't clobber
+for c in 1 2 3; do
+  echo 0 > /sys/devices/system/cpu/cpu$c/online 2>/dev/null && echo "    offlined cpu$c"
+done
+echo "    online: $(cat /sys/devices/system/cpu/online)"
+
+echo "=== FIRING. TV screen switches to RexOS (or a beacon). ==="
+sync; sync; sleep 1
+exec /tmp/kexec-arm-fixed -e
+REMOTE
+
+if [ "${STAGE_ONLY:-0}" != "1" ]; then
+  echo "==> kexec -e issued. If it worked, the TV is now running RexOS in RAM."
+  echo "    After: if it reset to stock, read crumb 0x18060110 via devmem."
+  echo "    If it stayed up, 'nc <tvip> 2323' drops you into RexOS."
+fi

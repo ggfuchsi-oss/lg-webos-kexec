@@ -1,0 +1,72 @@
+#!/bin/sh
+# /init — RexOS-TV userspace entry. Runs inside the kexec'd kernel, in RAM.
+#
+# Job 1 (critical): keep the box alive. The external Micom MCU resets the board
+# if the SCPU looks dead. The kernel's intmicom thread already pets it (proven
+# to return success), and we ALSO fork our own /sbin/micom-pet as defense-in-
+# depth + a breadcrumb heartbeat we can read from the stock side afterwards.
+#
+# Job 2: bring up a debug channel. No serial console on the TV, and the
+# framebuffer is tiled (raw text is infeasible), so our interactive shell is a
+# netcat listener on the network. If the eth driver comes up, `nc <tvip> 2323`
+# from the PC drops you into RexOS. The breadcrumb register 0x18060110 is the
+# fallback liveness proof.
+
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+# --- minimal userspace bringup ---
+mount -t proc  proc  /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || mount -t tmpfs tmpfs /dev
+mkdir -p /dev/pts && mount -t devpts devpts /dev/pts 2>/dev/null
+echo "RexOS-TV" > /proc/sys/kernel/hostname
+
+# --- breadcrumb: we are alive (survives a warm reset; read via devmem 0x18060110) ---
+if command -v devmem >/dev/null; then
+  devmem 0x18060110 32 0x52455801   # "REX\x01"
+fi
+
+# --- keep the box alive ---
+/sbin/micom-pet &
+PET_PID=$!
+
+# --- keep the box alive ---
+/sbin/micom-pet &
+PET_PID=$!
+
+# --- bring up networking (wifi first, then eth) ---
+mkdir -p /var/run/wpa_supplicant
+
+# 1) load the stock wifi module (vermagic must match -> LOCALVERSION="")
+if [ -f /lib/modules/wlan_mt7663.ko ]; then
+  insmod /lib/modules/wlan_mt7663.ko 2>/dev/null && echo "wifi module loaded"
+  for i in 1 2 3 4 5; do ifconfig wlan0 >/dev/null 2>&1 && break; sleep 1; done
+fi
+
+# 2) associate via wpa_supplicant if we have a config
+if [ -x /usr/sbin/wpa_supplicant ] && [ -f /etc/wpa_supplicant.conf ]; then
+  /usr/sbin/wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf -D nl80211 2>/dev/null \
+    && echo "wpa_supplicant started"
+  sleep 4
+fi
+
+# 3) DHCP on whichever interface is up (script sets the IP; no route needed for LAN)
+for ifc in wlan0 eth0; do
+  if ifconfig "$ifc" >/dev/null 2>&1; then
+    udhcpc -i "$ifc" -n -q -s /usr/share/udhcpc/default.script 2>/dev/null
+    echo "$ifc ip: $(ifconfig "$ifc" 2>/dev/null | grep 'inet ')"
+  fi
+done
+ifconfig lo 127.0.0.1 up
+
+# --- debug shell over TCP (port 2323). Fire-and-forget; not required to live. ---
+if command -v nc >/dev/null; then
+  ( while true; do nc -l -p 2323 -e /bin/sh; sleep 1; done ) &
+fi
+
+echo "RexOS-TV: init up (micom-pet pid $PET_PID). Box should stay alive."
+
+# --- idle forever; do NOT call reboot. ---
+while :; do
+  sleep 3600
+done

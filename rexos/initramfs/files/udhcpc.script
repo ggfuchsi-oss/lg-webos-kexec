@@ -1,0 +1,19 @@
+#!/bin/sh
+# RexOS-TV udhcpc default script (busybox).
+# Same-subnet LAN reachability (PC <-> TV) only needs the IP; the default
+# route is set best-effort (harmless if the `route` applet is absent).
+case "$1" in
+  deconfig)
+    ifconfig "$interface" down 2>/dev/null
+    ifconfig "$interface" 0.0.0.0 2>/dev/null
+    ;;
+  bound|renew)
+    ifconfig "$interface" "$ip" netmask "${subnet:-255.255.255.0}" up
+    if [ -n "$router" ] && command -v route >/dev/null; then
+      route add default gw "$router" dev "$interface" 2>/dev/null
+    fi
+    if [ -n "$dns" ]; then
+      echo "nameserver $dns" > /etc/resolv.conf
+    fi
+    ;;
+esac
