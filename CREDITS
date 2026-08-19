@@ -1,0 +1,26 @@
+# Credits
+
+This project builds on work done by others. We try to be precise about what
+is ours vs. what we reused:
+
+## LG Electronics (K7LP GPL kernel)
+- **Linux kernel 4.4.84** for the Realtek RTD2875 (50UP81009LR), from LG's
+  public K7LP GPL source release. This repo does NOT re-host that kernel source.
+  Our changes to it are minimal and only for build/toolchain compatibility on
+  modern GCC 16:
+  - `arch/arm/Makefile`: drop `-rdynamic` from `CFLAGS_ABI` (modern `ld` rejects it).
+  - `arch/arm/**/*.S`: `,#alloc,#execinstr` → `"a"`/`"ax"` (new GAS section syntax).
+  - `KCFLAGS="-w -Wno-error ..."` to tolerate GCC16 warnings.
+  These are documented in `rexos/kernel/build.sh` + `rexos/kernel/README.md`.
+
+## webosbrew / RootMyTV
+- The rooting primitives (Homebrew Channel, `startup.sh` boot hook, `/var/lib/webosbrew/init.d`) that give us a root shell that runs every boot — the only reason kexec-from-the-running-kernel is reachable. Credit: webosbrew + RootMyTV teams.
+
+## kexec-tools
+- Standard userland (`kexec`), cross-compiled static for armv7 here.
+  https://www.kernel.org/pub/linux/kernel/people/horms/kexec-tools/
+
+## No DRM / no secure-boot code
+- We do NOT distribute, extract, or bypass any DRM key material or secure-boot
+  signing keys. Our boot path sidesteps secure boot entirely (signed stock kernel
+  boots first, kexec runs *inside* it) rather than defeating it.

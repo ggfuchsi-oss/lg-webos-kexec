@@ -33,21 +33,66 @@ Pull power = stock. It cannot brick.
 - `kexec-poc/` — the load-only proof-of-concept + framebuffer canary payloads.
 - `docs/` — reverse-engineering writeups (boot/security, SAM app loading, surface map, luna2 schema).
 
-## Novelty / prior art
-As far as we can tell, this is the first public kexec-based custom-kernel boot for an LG webOS TV. The primitives (`kexec`, rooted webOS, RTD2875) are all known individually; the *application to this locked-down consumer TV* appears to be new. We are **not** claiming a secure-boot bypass — we sidestep it.
+## Verify it yourself (you need the exact TV: 50UP81009LR, rooted, on the LAN)
+These steps reproduce what we did, on the exact hardware. Nothing is faked.
 
-## Dependencies (be honest about what's external)
+### 0. Prereqs
+- LG 50UP81009LR, rooted via Homebrew Channel, root SSH enabled, on your LAN.
+- The TV is `192.168.2.103` by default below; edit if yours differs.
+- One-time LG K7LP GPL kernel source tree: set `KERNEL_SRC=/path/to/linux-4.4.3` (download the `03.53.45` K7LP GPL tarball from LG open-source), or symlink `~/lgtv-toolkit/kernel-src/kernel/linux-4.4.3`.
+
+### 1. Build the toolchain + static `kexec` (no TV needed, ~2 min)
+```sh
+git clone https://github.com/ggfuchsi-oss/lg-webos-kexec
+cd lg-webos-kexec/kexec-poc && ./build.sh
+```
+Expected: a static ARM `kexec` binary at `kexec-arm` (168K, `file` shows `ELF 32-bit LSB ... ARM ... statically linked`).
+
+### 2. Reproduce the safe PoC on your TV (stages + unloads — no boot)
+```sh
+cd ../kexec-poc
+./run-poc.sh 192.168.2.103 ~/.ssh/tv_key
+```
+Expected result:
+```
+staged before      : 0
+staged after load  : 1   <- kernel accepted, DTB wired, segments allocated
+staged after unload: 0   <- cleared, TV untouched
+```
+This stages the TV's **own current kernel** via kexec and then immediately unloads it. `/sys/kernel/kexec_loaded` flips to `1` then back to `0`. No reboot, no kernel switch, nothing persists. Pull the plug = stock.
+
+### 3. (Attended) boot your own kernel — reboots the TV
+Only do this with the TV on and someone present:
+```sh
+cd ../rexos
+make                            # builds rexos-kernel.zImage + rexos-initramfs.cpio.gz into out/
+./boot/rexos-kexec --load-only   # stage, do NOT fire (same safe state as step 2)
+# then, when ready to actually jump:
+./boot/rexos-kexec               # kexec -e -> our kernel runs in RAM (TV will reset)
+```
+Known-honest caveats at step 3 (not bugs I'm hiding):
+- After `kexec -e`, the new kernel **reaches userspace** but the TV resets after ~10–21 s because the **micom/SOC watchdog isn't being petted**. That's the current wall, not a crash bug. `rexos/initramfs/micom-pet.c` is the daemon meant to fix this (still wiring it in).
+- Display is **tiled FBDC** — there's no text console; solid-color beacons only (see `kexec-poc/canary/`). Real graphics needs the VCPU RPC path (not done).
+- A wrong kernel/DTB just black-screens until power-cycle. It **cannot brick**: kexec writes only RAM, never eMMC.
+
+### TL;DR status (honest)
+- Kernel staging/execution primitive: **proven** (step 2). ✅
+- Custom kernel boots + reaches userspace: **proven** (step 3). ✅
+- Stays up as a usable OS: **not yet** — watchdog + display are the remaining walls. ⏳
 
 ## Dependencies (be honest about what's external)
 This repo contains **source + docs + the TV-captured build inputs** (kernel `.config`, wifi module + firmware, rootfs libs), but **not** the ~390 MB LG K7LP GPL kernel source tree itself — that is LG's to distribute, not ours to re-host.
 
 | dependency | how you get it |
 |---|---|
-| LG K7LP GPL `linux-4.4.3` (RTD2875) | LG opensource site → `3.5.x...03.53.45` → kernel tarball; or already present at `~/lgtv-toolkit/kernel-src/kernel/linux-4.4.3` |
+| LG K7LP GPL `linux-4.4.3` (RTD2875) | LG opensource site → `03.53.45` K7LP GPL tarball → kernel |
 | musl armv7 cross-toolchain (~98 MB) | **auto-fetched** by `kexec-poc/build.sh` (self-contained) |
 | A rooted TV (50UP81009LR) | needed the first time, only to capture `.config` — but that config is now **committed** at `rexos/kernel/rexos-tv.config`, so a clone builds offline |
 
 `make` will fail with a clear `KERNEL_SRC missing` if the kernel tree isn't present — there's no silent half-build.
 
+## Novelty / prior art
+As far as we can tell, this is the first public kexec-based custom-kernel boot for an LG webOS TV. The primitives (`kexec`, rooted webOS, RTD2875) are all known individually; the *application to this locked-down consumer TV* appears to be new. We are **not** claiming a secure-boot bypass — we sidestep it.
+
 ## License
-GPL-2.0 (kernel work; LG's GPL kernel source is GPL). Our scripts are GPL-compatible.
+GPL-2.0 (kernel work; LG's GPL kernel source is GPL). Our scripts are GPL-compatible. See `CREDITS` for upstream attribution.

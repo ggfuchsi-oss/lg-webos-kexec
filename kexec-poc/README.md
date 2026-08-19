@@ -34,9 +34,9 @@ No secure-boot break required. The stock kernel becomes a shim bootloader we own
 | file | role |
 |---|---|
 | `build.sh` | cross-build static armv7 `kexec-tools` (self-contained musl toolchain, no sudo) |
-| `kexec-arm` | the built static ARM binary (168K), runs on the TV as-is |
-| `run-poc.sh` | reproduce the safe load → verify → unload |
-| `arm-linux-musleabihf-cross/` | the toolchain (kept for building a custom kernel, step C) |
+| `kexec-arm` | the built static ARM binary (168K), produced by `build.sh` — run `./build.sh` first |
+| `run-poc.sh` | reproduce the safe load → verify → unload (staged then unloaded, no boot) |
+| *(toolchain is fetched, not committed)* | `build.sh` downloads the musl armv7 toolchain once (~98MB) into `arm-linux-musleabihf-cross/` |
 
 ## Safety
 
