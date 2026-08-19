@@ -1,5 +1,4 @@
 /out/
-/kernel/rexos-tv.config
 /initramfs/rootfs/
 /initramfs/busybox-*/
 *.o

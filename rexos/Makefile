@@ -8,7 +8,7 @@ INITRAM  := initramfs
 
 # Point these at your local copies (defaults match rex's box).
 KERNEL_SRC ?= $(HOME)/lgtv-toolkit/kernel-src/kernel/linux-4.4.3
-MUSL_DIR    ?= $(HOME)/lgtv-toolkit/kexec-poc/arm-linux-musleabihf-cross
+MUSL_DIR    ?= $(CURDIR)/../kexec-poc/arm-linux-musleabihf-cross
 
 .PHONY: all kernel initramfs kexec boot clean
 

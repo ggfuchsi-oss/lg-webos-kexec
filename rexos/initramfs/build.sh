@@ -10,7 +10,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="${OUT:-$HERE/../out}"
-MUSL_DIR="${MUSL_DIR:-$HOME/lgtv-toolkit/kexec-poc/arm-linux-musleabihf-cross}"
+MUSL_DIR="${MUSL_DIR:-$HERE/../kexec-poc/arm-linux-musleabihf-cross}"
 BB_VER="1.36.1"
 BB_SRC="$HERE/busybox-$BB_VER"
 ROOTFS="$HERE/rootfs"
