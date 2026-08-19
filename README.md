@@ -36,5 +36,18 @@ Pull power = stock. It cannot brick.
 ## Novelty / prior art
 As far as we can tell, this is the first public kexec-based custom-kernel boot for an LG webOS TV. The primitives (`kexec`, rooted webOS, RTD2875) are all known individually; the *application to this locked-down consumer TV* appears to be new. We are **not** claiming a secure-boot bypass — we sidestep it.
 
+## Dependencies (be honest about what's external)
+
+## Dependencies (be honest about what's external)
+This repo contains **source + docs + the TV-captured build inputs** (kernel `.config`, wifi module + firmware, rootfs libs), but **not** the ~390 MB LG K7LP GPL kernel source tree itself — that is LG's to distribute, not ours to re-host.
+
+| dependency | how you get it |
+|---|---|
+| LG K7LP GPL `linux-4.4.3` (RTD2875) | LG opensource site → `3.5.x...03.53.45` → kernel tarball; or already present at `~/lgtv-toolkit/kernel-src/kernel/linux-4.4.3` |
+| musl armv7 cross-toolchain (~98 MB) | **auto-fetched** by `kexec-poc/build.sh` (self-contained) |
+| A rooted TV (50UP81009LR) | needed the first time, only to capture `.config` — but that config is now **committed** at `rexos/kernel/rexos-tv.config`, so a clone builds offline |
+
+`make` will fail with a clear `KERNEL_SRC missing` if the kernel tree isn't present — there's no silent half-build.
+
 ## License
 GPL-2.0 (kernel work; LG's GPL kernel source is GPL). Our scripts are GPL-compatible.
